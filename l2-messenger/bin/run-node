@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Ejecuta el "daemon/CLI" temporal (placeholder)
+python3 -m l2msg.cli

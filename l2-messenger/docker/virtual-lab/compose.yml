@@ -1,0 +1,15 @@
+services:
+  node1:
+    build: ../..
+    command: ["python","-m","l2msg.cli"]
+    cap_add: [ "NET_RAW", "NET_ADMIN" ]
+    networks: [ "l2lab" ]
+  node2:
+    build: ../..
+    command: ["python","-m","l2msg.cli"]
+    cap_add: [ "NET_RAW", "NET_ADMIN" ]
+    networks: [ "l2lab" ]
+
+networks:
+  l2lab:
+    driver: bridge

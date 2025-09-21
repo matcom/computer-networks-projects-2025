@@ -1,0 +1,236 @@
+En un anterior chat te estuve preguntando dudas sobre la orientacion de mi proyecto de Redes, la cual llevas adjunta en los archivos del proyecto, y ahora necesito comenzar la fase de desarrollo, lo haremos en python, usando la estructura de carpetas que me recomendaste en dicho chat y te mandare ahora. Cual deberia ser nuestro primer paso? me puedes ayudar en su implementacion?
+esta es la respuesta que me brindaste en el chat anterior:
+¡Perfecto! Voy a (1) analizar tu orientación, (2) proponerte herramientas y prácticas que facilitan el desarrollo respetando “solo biblioteca estándar” en **runtime**, y (3) darte un **script Bash** que crea una estructura de carpetas lista para empezar tu app en **Python**.
+
+---
+
+# 1) Análisis de la orientación (qué implica técnicamente)
+
+* **Capa de enlace estricta (L2) y solo stdlib**
+  En Python, el único camino real para operar en L2 es **raw sockets con `AF_PACKET`** (Linux). Eso permite enviar/recibir **tramas Ethernet** (definir un EtherType propio) sin tocar IP/UDP/TCP.
+  • **Linux/WSL2**: viable.
+  • **Windows nativo/macOS**: `AF_PACKET` no existe; sin librerías de terceros (pcap/scapy) no es factible.
+  ⇒ **Recomendación**: desarrollar/ejecutar en Linux (o dentro de Docker Linux con capacidades) y, para pruebas en red física, correr en el host Linux o en contenedores con **macvlan**.
+
+* **Direcciones y descubrimiento**
+  • Identidad por **MAC** (y un **Session-ID** propio).
+  • **Descubrimiento** con **broadcast** (ff\:ff\:ff\:ff\:ff\:ff) y tu **EtherType**; mensaje `HELLO` → respuestas `HELLO_ACK` unicast.
+  • Cache de vecinos (tabla **MAC ↔ nombre/Session-ID/último visto**).
+
+* **Sesión L2 (handshake)**
+  Pequeño 3-way handshake (`SYN` → `SYN-ACK` → `ACK`) para acordar: **MTU efectiva**, **tamaño de chunk**, si usar **compresión** (p.ej. zlib del stdlib) y ventana (simple stop-and-wait o ventana pequeña).
+
+* **Mensajería y archivos P2P**
+  • Definir cabezal propio: `MAGIC | VERSION | MSG_TYPE | SESSION | SEQ | LEN | FLAGS | CRC32` (CRC32 con `zlib.crc32`).
+  • **Fragmentación L2** (≤ \~1400 bytes por trama para ir seguro en Ethernet/bridge).
+  • **ACK/NACK** por secuencia y **retransmisión** por timeout.
+  • Transferencia de archivos: `FILE_META` (nombre, tamaño, hash), `FILE_CHUNK`(+SEQ), `FILE_END`. Hash final (p.ej. `hashlib.sha256`) para verificar integridad.
+
+* **Interfaz mínima (CLI)**
+  Comandos como:
+  `discover`, `peers`, `chat <MAC> "<msg>"`, `send <MAC> <archivo>`, `listen`, `daemon` (servicio L2) y un CLI que dialogue con él (p.ej. por **Unix domain socket** – stdlib).
+
+* **Virtualizado vs físico**
+  • **Laboratorio Docker** (misma bridge): broadcast y L2 entre contenedores **sí fluye**; requiere `--cap-add NET_RAW` (y a veces `NET_ADMIN`).
+  • **LAN física**: mejor **macvlan** para dar a cada contenedor su propia MAC visible en la red real.
+
+---
+
+# 2) Herramientas y prácticas (sin violar los requisitos)
+
+> **En runtime del proyecto**: solo **biblioteca estándar** de Python
+
+* `socket` (AF\_PACKET, SOCK\_RAW), `struct`, `select`/`selectors`, `threading/asyncio`, `queue`, `logging`, `argparse`, `pathlib`, `hashlib`, `zlib`, `uuid`, `signal`, `dataclasses`.
+
+> **Para desarrollo y depuración** (no son dependencias del programa):
+
+* **Wireshark / tcpdump**: inspeccionar tu EtherType y verificar fragmentación/ACKs.
+* **iproute2** (`ip link`, `ip neigh`, `ip addr`) y **ethtool**: ver interfaces/MTU.
+* **setcap** o `sudo`: dar **CAP\_NET\_RAW** al intérprete o correr con privilegios:
+
+  * `sudo setcap cap_net_raw,cap_net_admin+ep "$(command -v python3)"` *(o al binario de tu venv)*.
+* **Docker** para laboratorio:
+
+  * `--cap-add NET_RAW --cap-add NET_ADMIN`
+  * Bridge para entorno virtualizado; **macvlan** para pruebas en LAN.
+* (Opcional dev) **ruff/mypy/pytest** solo para calidad y tests locales; **no** se empaquetan ni se usan en producción si quieres purismo estricto.
+
+> **Red virtualizada Docker (laboratorio rápido)**
+
+* Bridge por defecto o una **bridge dedicada**.
+* `docker compose` con:
+
+  ```yaml
+  cap_add: [ "NET_RAW", "NET_ADMIN" ]
+  networks: [ "l2lab" ]
+  ```
+* Varios servicios/ réplicas para simular nodos. Broadcast funciona dentro de esa bridge.
+
+> **Red física (LAN) con macvlan**
+
+* Ejemplo (adapta subred/parent):
+
+  ```bash
+  docker network create -d macvlan \
+    --subnet 192.168.1.0/24 --gateway 192.168.1.1 \
+    -o parent=eth0 lan_macvlan
+  ```
+* Cada contenedor obtiene **IP y MAC propios** sobre `eth0` físico, manteniendo tu lógica L2.
+
+---
+
+# 3) Script Bash: esqueleto de proyecto en Python (solo stdlib)
+
+Guárdalo como `init_scaffold.sh`, dale permisos y ejecútalo con un nombre opcional de proyecto (por defecto `l2-messenger`):
+
+```bash
+#!/usr/bin/env bash
+# Uso: ./init_scaffold.sh [nombre_proyecto]
+set -euo pipefail
+
+PROJ="${1:-l2-messenger}"
+
+mkdir -p "$PROJ"/{src/l2msg/{cli,core,net,discovery,session,transfer,storage,utils},tests/{unit,integration},scripts,bin,docs,configs,docker/{virtual-lab,macvlan}}
+
+# Archivos base
+cat > "$PROJ/README.md" <<'MD'
+# L2 Messenger (stdlib Python)
+Mensajería y transferencia de archivos en Capa de Enlace (Ethernet) usando solo biblioteca estándar.
+MD
+
+cat > "$PROJ/.gitignore" <<'GI'
+__pycache__/
+*.pyc
+.env
+/.venv
+/dist
+/build
+GI
+
+# Paquete Python
+touch "$PROJ/src/l2msg/__init__.py"
+
+cat > "$PROJ/src/l2msg/cli/__main__.py" <<'PY'
+#!/usr/bin/env python3
+# CLI mínima de arranque (solo stdlib)
+import sys
+
+def main():
+    print("l2msg CLI — placeholder")
+    print("Comandos esperados: discover | peers | listen | chat <MAC> <msg> | send <MAC> <path>")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
+PY
+chmod +x "$PROJ/src/l2msg/cli/__main__.py"
+
+# Stubs de módulos (solo nombres; implementar luego)
+for f in protocol frame codec crypto; do
+  cat > "$PROJ/src/l2msg/core/${f}.py" <<PY
+# ${f}.py — stub (definir MAGIC, VERSION, tipos de mensaje, headers, CRC, etc.)
+PY
+done
+
+for f in raw_socket iface filter; do
+  cat > "$PROJ/src/l2msg/net/${f}.py" <<PY
+# ${f}.py — stub (AF_PACKET, bind a interfaz, selección por EtherType, etc.)
+PY
+done
+
+for d in discovery session transfer storage utils; do
+  cat > "$PROJ/src/l2msg/${d}/__init__.py" <<PY
+# ${d} — paquete
+PY
+done
+
+# Tests base (unittest del stdlib)
+cat > "$PROJ/tests/unit/test_smoke.py" <<'PY'
+import unittest
+
+class SmokeTest(unittest.TestCase):
+    def test_truth(self):
+        self.assertTrue(True)
+
+if __name__ == "__main__":
+    unittest.main()
+PY
+
+# Scripts útiles
+cat > "$PROJ/bin/run-node" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+# Ejecuta el "daemon/CLI" temporal (placeholder)
+python3 -m l2msg.cli
+SH
+chmod +x "$PROJ/bin/run-node"
+
+# Docker (laboratorio virtual)
+cat > "$PROJ/docker/virtual-lab/compose.yml" <<'YML'
+services:
+  node1:
+    build: ../..
+    command: ["python","-m","l2msg.cli"]
+    cap_add: [ "NET_RAW", "NET_ADMIN" ]
+    networks: [ "l2lab" ]
+  node2:
+    build: ../..
+    command: ["python","-m","l2msg.cli"]
+    cap_add: [ "NET_RAW", "NET_ADMIN" ]
+    networks: [ "l2lab" ]
+
+networks:
+  l2lab:
+    driver: bridge
+YML
+
+cat > "$PROJ/docker/Dockerfile" <<'DOCKER'
+FROM python:3.12-slim
+WORKDIR /app
+COPY src ./src
+ENV PYTHONPATH=/app/src
+CMD ["python","-m","l2msg.cli"]
+DOCKER
+
+# Docker (macvlan) — guía
+cat > "$PROJ/docker/macvlan/README.md" <<'MD'
+**macvlan**: crea una red con `docker network create -d macvlan ... -o parent=eth0`.
+Asigna contenedores a esa red para pruebas sobre la LAN física. Añade `cap_add: [NET_RAW, NET_ADMIN]`.
+MD
+
+# Configs
+cat > "$PROJ/configs/app.example.toml" <<'TOML'
+[app]
+ether_type = "0x88B5"   # experimental/local use
+iface = "eth0"          # adapta a tu entorno
+mtu_safe = 1400
+TOML
+
+echo "✅ Estructura creada en: $PROJ"
+```
+
+**Cómo usarlo:**
+
+```bash
+chmod +x init_scaffold.sh
+./init_scaffold.sh l2-messenger
+# Ejecutar el placeholder:
+cd l2-messenger
+./bin/run-node
+```
+
+---
+
+## Próximos pasos recomendados (resumen corto)
+
+1. **Definir el protocolo** (constantes, tipos de mensaje, cabecera, CRC y reintentos).
+2. **Abrir `AF_PACKET`** en `net/raw_socket.py`, filtrar por tu **EtherType** y soportar broadcast.
+3. **Discovery** (`HELLO` / `HELLO_ACK`) y tabla de pares.
+4. **Handshake** (acuerdos de MTU/ventana/opciones).
+5. **Mensajería** (texto) y **archivo** (chunks + ACK + checksum).
+6. **CLI** mínima con `argparse`.
+7. **Laboratorio Docker** (bridge) y después **macvlan** para LAN real.
+8. **Pruebas** con `unittest` y validación en Wireshark/tcpdump.
+
+Si quieres, en el siguiente paso te bosquejo el **formato de trama** y el **handshake** con campos exactos (y timeouts/ventanas) para que puedas implementarlo directo.
+

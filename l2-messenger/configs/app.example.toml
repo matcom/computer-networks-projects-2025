@@ -1,0 +1,4 @@
+[app]
+ether_type = "0x88B5"   # experimental/local use
+iface = "eth0"          # adapta a tu entorno
+mtu_safe = 1400
