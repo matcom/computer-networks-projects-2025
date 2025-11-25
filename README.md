@@ -32,5 +32,5 @@ Fecha de entrega 12 de octubre 11:59:59 pm
 
 [Portal Cautivo](captiveportal.md) 
 
-Fecha de entrega 30 de noviembre 11:59:59 pm
+Fecha de entrega 7 de diciembre 11:59:59 pm
 
